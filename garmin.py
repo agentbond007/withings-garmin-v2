@@ -20,9 +20,9 @@ class LoginFailed(Exception):
 class GarminConnect(object):
     LOGIN_URL = 'https://connect.garmin.com/signin'
     UPLOAD_URL = 'https://connect.garmin.com/proxy/upload-service-1.1/json/upload/.fit'
-    
+
     _sessionCache = SessionCache(lifetime=timedelta(minutes=30), freshen_on_get=True)
-            
+
     def create_opener(self, cookie):
         this = self
         class _HTTPRedirectHandler(urllib2.HTTPRedirectHandler):
@@ -30,11 +30,11 @@ class GarminConnect(object):
                 if req.get_full_url() == this.LOGIN_URL:
                     raise LoginSucceeded
                 return urllib2.HTTPRedirectHandler.http_error_302(self, req, fp, code, msg, headers)
-        return urllib2.build_opener(_HTTPRedirectHandler, urllib2.HTTPCookieProcessor(cookie))            
-        
+        return urllib2.build_opener(_HTTPRedirectHandler, urllib2.HTTPCookieProcessor(cookie))
+
     ##############################################
     # From https://github.com/cpfair/tapiriik
-    
+
     def _get_cookies(self, record=None, email=None, password=None):
 
         gcPreResp = requests.get("https://connect.garmin.com/", allow_redirects=False)
@@ -123,7 +123,7 @@ class GarminConnect(object):
 
         self._sessionCache.Set(record.ExternalID if record else email, gcPreResp.cookies)
 
-        return gcPreResp.cookies    
+        return gcPreResp.cookies
 
 
 
@@ -131,16 +131,16 @@ class GarminConnect(object):
 
         cookies = self._get_cookies(email=username, password=password)
         GCusername = requests.get("https://connect.garmin.com/user/username", cookies=cookies).json()["username"]
-        sys.stderr.write('Garmin Connect User Name: ' + GCusername + '\n')    
-     
+        sys.stderr.write('Garmin Connect User Name: ' + GCusername + '\n')
+
         if not len(GCusername):
             raise APIException("Unable to retrieve username", block=True, user_exception=UserException(UserExceptionType.Authorization, intervention_required=True))
         return (cookies)
 
     def upload_file(self, f, cookie):
-        self.opener = self.create_opener(cookie) 
-    
-    
+        self.opener = self.create_opener(cookie)
+
+
         # accept file object or string
         if isinstance(f, file):
             f.seek(0)
@@ -164,4 +164,3 @@ class GarminConnect(object):
         lines.append('')
         r = self.opener.open(req, '\r\n'.join(lines))
         return r.code == 200
-
