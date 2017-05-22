@@ -20,9 +20,9 @@ class LoginFailed(Exception):
 class GarminConnect(object):
     LOGIN_URL = 'https://connect.garmin.com/signin'
     UPLOAD_URL = 'https://connect.garmin.com/modern/proxy/upload-service/upload/.fit'
-    
+
     _sessionCache = SessionCache(lifetime=timedelta(minutes=30), freshen_on_get=True)
-    
+
     def create_opener(self, cookie):
         this = self
         class _HTTPRedirectHandler(urllib2.HTTPRedirectHandler):
@@ -30,14 +30,14 @@ class GarminConnect(object):
                 if req.get_full_url() == this.LOGIN_URL:
                     raise LoginSucceeded
                 return urllib2.HTTPRedirectHandler.http_error_302(self, req, fp, code, msg, headers)
-        return urllib2.build_opener(_HTTPRedirectHandler, urllib2.HTTPCookieProcessor(cookie))            
-        
+        return urllib2.build_opener(_HTTPRedirectHandler, urllib2.HTTPCookieProcessor(cookie))
+
     ##############################################
     # From https://github.com/cpfair/tapiriik
-    
+
     def _get_session(self, record=None, email=None, password=None):
         session = requests.Session()
-        
+
         # JSIG CAS, cool I guess.
         # Not quite OAuth though, so I'll continue to collect raw credentials.
         # Commented stuff left in case this ever breaks because of missing parameters...
@@ -69,14 +69,11 @@ class GarminConnect(object):
             # "initialFocus": "true",
             # "locale": "en"
         }
+
         # I may never understand what motivates people to mangle a perfectly good protocol like HTTP in the ways they do...
         preResp = session.get("https://sso.garmin.com/sso/login", params=params)
         if preResp.status_code != 200:
             raise APIException("SSO prestart error %s %s" % (preResp.status_code, preResp.text))
-            
-        data["lt"] = re.search("name=\"lt\"\s+value=\"([^\"]+)\"", preResp.text).groups(1)[0]
-        
-        # print "Received lt: " + data["lt"]
 
         ssoResp = session.post("https://sso.garmin.com/sso/login", params=params, data=data, allow_redirects=False)
         if ssoResp.status_code != 200 or "temporarily unavailable" in ssoResp.text:
@@ -90,31 +87,28 @@ class GarminConnect(object):
         if "renewPassword" in ssoResp.text:
             raise APIException("Reset password", block=True, user_exception=UserException(UserExceptionType.RenewPassword, intervention_required=True))
 
-        ticket_match = re.search("ticket=([^']+)'", ssoResp.text)
-        
-        if not ticket_match:
-            raise APIException("Invalid login", block=True, user_exception=UserException(UserExceptionType.Authorization, intervention_required=True))
-        ticket = ticket_match.groups(1)[0]
-        
-        # print "Ticket: " + ticket
         # self.print_cookies(cookies=session.cookies)
 
         # ...AND WE'RE NOT DONE YET!
-        
-        gcRedeemResp = session.get("https://connect.garmin.com/post-auth/login", params={"ticket": ticket}, allow_redirects=False)
+
+        gcRedeemResp = session.get("https://connect.garmin.com/post-auth/login", allow_redirects=False)
         if gcRedeemResp.status_code != 302:
             raise APIException("GC redeem-start error %s %s" % (gcRedeemResp.status_code, gcRedeemResp.text))
 
-        # self.print_cookies(cookies=session.cookies)
-        
+        url_prefix = "https://connect.garmin.com"
+
         # There are 6 redirects that need to be followed to get the correct cookie
         # ... :(
         max_redirect_count = 7
         current_redirect_count = 1
         while True:
-            gcRedeemResp = session.get(gcRedeemResp.headers["location"], allow_redirects=False)
-            
-            # self.print_cookies(cookies=session.cookies)
+            url = gcRedeemResp.headers["location"]
+
+            # Fix up relative redirects.
+            if url.startswith("/"):
+                url = url_prefix + url
+            url_prefix = "/".join(url.split("/")[:3])
+            gcRedeemResp = session.get(url, allow_redirects=False)
 
             if current_redirect_count >= max_redirect_count and gcRedeemResp.status_code != 200:
                 raise APIException("GC redeem %d/%d error %s %s" % (current_redirect_count, max_redirect_count, gcRedeemResp.status_code, gcRedeemResp.text))
@@ -125,12 +119,14 @@ class GarminConnect(object):
                 break
 
         self._sessionCache.Set(record.ExternalID if record else email, session.cookies)
-        
-        return session  
+
+        # self.print_cookies(session.cookies)
+
+        return session
 
     def print_cookies(self, cookies):
             print "Cookies"
-            
+
             for key, value in cookies.items():
                 print "Key: " + key + ", " + value
 
@@ -139,9 +135,9 @@ class GarminConnect(object):
         session = self._get_session(email=username, password=password)
         res = session.get("https://connect.garmin.com/user/username")
         GCusername = res.json()["username"]
-        
-        sys.stderr.write('Garmin Connect User Name: ' + GCusername + '\n')    
-     
+
+        sys.stderr.write('Garmin Connect User Name: ' + GCusername + '\n')
+
         if not len(GCusername):
             raise APIException("Unable to retrieve username", block=True, user_exception=UserException(UserExceptionType.Authorization, intervention_required=True))
         return (session)
@@ -151,12 +147,15 @@ class GarminConnect(object):
 
         res = session.post(self.UPLOAD_URL,
                            files=files,
-                           headers={"nk": "NT"}) 
+                           headers={"nk": "NT"})
 
         try:
             resp = res.json()["detailedImportResult"]
         except ValueError:
-            raise APIException("Bad response during GC upload: %s %s" % (res.status_code, res.text))
+            if(res.status_code == 204):   # HTTP result 204 - "no content"
+                sys.stderr.write('No data to upload, try to use --fromdate and --todate\n')
+            else:
+                print "Bad response during GC upload: " + str(res.status_code)
+                raise APIException("Bad response during GC upload: %s %s" % (res.status_code, res.text))
 
-        return (res.status_code == 200 or res.status_code == 201)
-
+        return (res.status_code == 200 or res.status_code == 201 or res.status_code == 204)
